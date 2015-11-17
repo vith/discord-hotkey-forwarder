@@ -1,0 +1,123 @@
+#!/usr/bin/env bash
+
+xbindkeysPid=""
+
+function cleanup() {
+    if [ -n "$xbindkeysPid" ]; then
+        >&2 echo -n "killing xbindkeys (pid: $xbindkeysPid)..."
+        kill "$xbindkeysPid"
+        if [ $? -eq 0 ]; then
+            >&2 echo " done."
+        else
+            >&2 echo " failed."
+        fi
+    else
+        >&2 echo "no xbindkeys to kill."
+    fi
+}
+
+function interruptHandler() {
+    >&2 echo -n $'\ncaught interrupt. '
+    cleanup
+    exit 1
+}
+
+trap interruptHandler INT
+
+function fail() {
+    >&2 echo "$*" # echo args to stderr
+    exit 1
+}
+
+function getDiscordWindow() {
+    discordWindow=""
+
+    possibleWindows=$(xdotool search --onlyvisible --class discord)
+    for possibleWindow in $possibleWindows; do
+        wmName=$(xprop -id "$possibleWindow" WM_NAME|grep -Po '(?<=WM_NAME\(UTF8_STRING\) = ").+(?=")')
+        if [ "$wmName" = "Discord" ]; then
+            [ -n "$discordWindow" ] && fail "found multiple discord windows"
+            discordWindow="$possibleWindow"
+        fi
+    done
+
+    echo "$discordWindow"
+}
+
+function getCurrentWindow() {
+    currentWindow="$(xdotool getwindowfocus)"
+    [ $? -ne 0 ] && fail "couldn't get current window"
+    echo "$currentWindow"
+}
+
+function listener() {
+    globalKeybind="$1"
+    discordKeybind="$2"
+
+    [ -z "$globalKeybind" -o -z "$discordKeybind" ] && printListenArgs
+
+    newline=$'\n'
+    tab=$'\t'
+
+    keydownCommand="$0 forward-keydown \"$discordKeybind\""
+    keyupCommand="$0 forward-keyup \"$discordKeybind\""
+
+    xbindkeysConfig="\"$keydownCommand\"
+    ${globalKeybind}
+\"$keyupCommand\"
+    ${globalKeybind} + Release"
+
+    xbindkeys -n --file <(echo "$xbindkeysConfig") &
+    xbindkeysPid=$!
+
+    echo "sending \"$discordKeybind\" to discord when you press \"$globalKeybind\""
+
+    wait $xbindkeysPid
+}
+
+function forwardKey() { # args: up|down <xdotool key>
+    event="$1"
+    key="$2"
+
+    currentWindow="$(getCurrentWindow)"
+    discordWindow="$(getDiscordWindow)"
+
+    case "$event" in
+        down)
+            echo -n $'  🎤  broadcasting\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b'
+            xdotool windowfocus --sync "$discordWindow" keydown "$key" windowfocus --sync "$currentWindow" keyup "$key"
+            ;;
+        up)
+            xdotool windowfocus --sync "$discordWindow" keydown "$key" keyup "$key" windowfocus --sync "$currentWindow"
+            echo -n $'                 \b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b'
+            ;;
+        *)
+            fail "invalid arguments to forwardKey(): $*"
+            ;;
+    esac
+}
+
+# argument handling
+
+subcommand="$1"
+shift
+subcommandArgs="$@"
+
+function printListenArgs() {
+    fail $"Usage: $0 listen <global hotkey> <discord hotkey>"
+}
+
+case "$subcommand" in
+    listen)
+        listener $subcommandArgs
+        ;;
+    forward-keydown)
+        forwardKey down "$subcommandArgs"
+        ;;
+    forward-keyup)
+        forwardKey up "$subcommandArgs"
+        ;;
+    *)
+        printListenArgs
+        ;;
+esac
